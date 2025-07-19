@@ -1,24 +1,24 @@
 
 import streamlit as st
 import pandas as pd
-import fitz  # PyMuPDF
-from io import BytesIO
-from datetime import datetime
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+import io
 
-# Load equipment cost data
-df = pd.read_excel("ค่าอุปกรณ์.xlsx", engine="openpyxl")
-df.set_index("equipment", inplace=True)
+# Load equipment data
+df = pd.read_excel("equipment_costs.xlsx", engine="openpyxl")
+equipment_data = df.set_index("equipment").to_dict("index")
 
-# Mapping for healthcare schemes
-scheme_map = {
-    "Scheme A : universal healthcare (ประกันสุขภาพถ้วนหน้า)": "Universal healthcare",
-    "Scheme B: UCEP Scheme": "UCEP",
-    "C: Social security Scheme (ประกันสังคม)": "Social Security",
-    "D: Civil service Scheme (จ่ายตรง)": "Civil Servant",
-    "E: Self pay (เงินสด)": "Self pay"
+# Define healthcare schemes
+schemes = {
+    "A": "Universal healthcare (ประกันสุขภาพถ้วนหน้า)",
+    "B": "UCEP Scheme",
+    "C": "Social security Scheme (ประกันสังคม)",
+    "D": "Civil service Scheme (จ่ายตรง)",
+    "E": "Self pay (เงินสด)"
 }
 
-# Default equipment per operation
+# Define operations and default equipment
 operation_defaults = {
     "Diagnostic angiogram": {"Angiogram": 1, "Contrast media": 4, "femoral sheath": 1, "Diagnostic catheter": 1, "0.038 Wire": 1},
     "Cerebral angiogram with simple coiling": {"Angiogram": 1, "Contrast media": 6, "femoral sheath": 1, "Softip guider": 1, "0.038 Wire": 1, "SL10": 1, "Synchro": 1, "Rhya": 2, "Coil": 5},
@@ -27,108 +27,117 @@ operation_defaults = {
     "Cerebral angiogram with stent assisted coiling": {"Angiogram": 1, "Contrast media": 6, "femoral sheath": 1, "Softip guider": 1, "0.038 Wire": 1, "SL10": 2, "Synchro": 1, "Coil": 5, "Neuroform ATLAS": 1, "Rhya": 3}
 }
 
-# Equipment limited to 0 or 1
-limited_equipment = ["femoral sheath", "Destination longsheath", "Fubuki Longsheath", "NeuronMAX Longsheath", "Fargo/ FargoMAX", "Sofia 5F ", "Neuroform ATLAS", "Surpass", "Silk Vista", "Copernic balloon ", "Hyperglide balloon", "exchange wire", "mariner"]
-
-# Page 1: Patient Data
+# Session state initialization
 if "page" not in st.session_state:
-    st.session_state.page = 1
+    st.session_state.page = 0
+if "patient_data" not in st.session_state:
+    st.session_state.patient_data = {}
+if "operation" not in st.session_state:
+    st.session_state.operation = ""
+if "equipment" not in st.session_state:
+    st.session_state.equipment = {}
 
-if st.session_state.page == 1:
+# Navigation buttons
+def next_page():
+    st.session_state.page += 1
+
+def prev_page():
+    st.session_state.page -= 1
+
+# Page 0: Patient Data
+if st.session_state.page == 0:
     st.title("Patient Information")
-    name = st.text_input("ชื่อ")
-    surname = st.text_input("นามสกุล")
-    hn = st.text_input("HN")
-    diagnosis = st.text_input("Diagnosis")
-    scheme = st.selectbox("Healthcare Scheme", list(scheme_map.keys()))
+    st.session_state.patient_data["ชื่อ"] = st.text_input("ชื่อ")
+    st.session_state.patient_data["นามสกุล"] = st.text_input("นามสกุล")
+    st.session_state.patient_data["HN"] = st.text_input("HN")
+    st.session_state.patient_data["Diagnosis"] = st.text_input("Diagnosis")
+    scheme = st.selectbox("Healthcare Scheme", list(schemes.keys()), format_func=lambda x: schemes[x])
+    st.session_state.patient_data["Scheme"] = scheme
     if st.button("Next"):
-        st.session_state.patient_data = {"ชื่อ": name, "นามสกุล": surname, "HN": hn, "Diagnosis": diagnosis, "Scheme": scheme}
-        st.session_state.page = 2
-    st.stop()
+        next_page()
 
-# Page 2: Operation Selection
-if st.session_state.page == 2:
+# Page 1: Operation Selection
+elif st.session_state.page == 1:
     st.title("Select Operation")
     operations = list(operation_defaults.keys()) + ["Others"]
-    operation = st.selectbox("Operation", operations)
-    other_op = ""
-    if operation == "Others":
-        other_op = st.text_input("Specify Operation")
+    selected_op = st.selectbox("Operation", operations)
+    if selected_op == "Others":
+        custom_op = st.text_input("Enter operation name")
+        st.session_state.operation = custom_op
+    else:
+        st.session_state.operation = selected_op
+    if st.button("Previous"):
+        prev_page()
     if st.button("Next"):
-        st.session_state.operation = other_op if operation == "Others" else operation
-        st.session_state.page = 3
-    st.stop()
+        next_page()
 
-# Page 3: Equipment Selection
-if st.session_state.page == 3:
-    st.title("Select Equipment Used")
-    default_equipment = operation_defaults.get(st.session_state.operation, {})
-    equipment_used = {}
-    for item in df.index:
-        default = default_equipment.get(item, 0)
-        max_val = 1 if item in limited_equipment else 20
-        qty = st.number_input(f"{item}", min_value=0, max_value=max_val, value=default, step=1)
-        if qty > 0:
-            equipment_used[item] = qty
+# Page 2: Equipment Selection
+elif st.session_state.page == 2:
+    st.title("Select Equipment")
+    st.subheader(f"Operation: {st.session_state.operation}")
+    defaults = operation_defaults.get(st.session_state.operation, {})
+    equipment_counts = {}
+    for item in equipment_data:
+        default = defaults.get(item, 0)
+        max_val = 1 if item in ["femoral sheath", "Destination longsheath", "Fubuki Longsheath", "NeuronMAX Longsheath", "Fargo/ FargoMAX", "Sofia 5F ", "Neuroform ATLAS", "Surpass", "Silk Vista", "Copernic balloon ", "Hyperglide balloon", "Exchange wire", "mariner"] else 100
+        equipment_counts[item] = st.number_input(item, min_value=0, max_value=max_val, value=default)
+    st.session_state.equipment = equipment_counts
+    if st.button("Previous"):
+        prev_page()
     if st.button("Next"):
-        st.session_state.equipment_used = equipment_used
-        st.session_state.page = 4
-    st.stop()
+        next_page()
 
-# Page 4: Cost Summary
-if st.session_state.page == 4:
+# Page 3: Cost Summary
+elif st.session_state.page == 3:
     st.title("Cost Summary")
-    scheme_col = scheme_map[st.session_state.patient_data["Scheme"]]
+    scheme = st.session_state.patient_data["Scheme"]
     total_cost = 0
-    total_reimb = 0
-    for item, qty in st.session_state.equipment_used.items():
-        cost = df.at[item, "Cost"] * qty
-        reimb = df.at[item, scheme_col] * qty
-        total_cost += cost
-        total_reimb += reimb
-    out_of_pocket = max(0, total_cost - total_reimb)
-    st.write(f"**Total Cost:** {total_cost:,.2f} THB")
-    st.write(f"**Total Reimbursement:** {total_reimb:,.2f} THB")
-    st.write(f"**Out-of-pocket:** {out_of_pocket:,.2f} THB")
-    if st.button("Generate PDF"):
-        st.session_state.summary = {"Total Cost": total_cost, "Total Reimbursement": total_reimb, "Out-of-pocket": out_of_pocket}
-        st.session_state.page = 5
-    st.stop()
+    total_reimbursement = 0
+    for item, qty in st.session_state.equipment.items():
+        cost = equipment_data[item]["Cost"]
+        reimb = equipment_data[item][schemes[scheme]]
+        total_cost += cost * qty
+        total_reimbursement += reimb * qty
+    out_of_pocket = max(total_cost - total_reimbursement, 0)
+    st.write(f"**Total Cost:** {total_cost:.2f}")
+    st.write(f"**Total Reimbursement:** {total_reimbursement:.2f}")
+    st.write(f"**Out-of-pocket Cost:** {out_of_pocket:.2f}")
+    if st.button("Previous"):
+        prev_page()
+    if st.button("Next"):
+        next_page()
 
-# Page 5: PDF Generation
-if st.session_state.page == 5:
-    st.title("Download PDF Summary")
-    buffer = BytesIO()
-    doc = fitz.open()
-    page = doc.new_page()
-    patient = st.session_state.patient_data
-    summary = st.session_state.summary
-    equip = st.session_state.equipment_used
-    op = st.session_state.operation
-    scheme = patient["Scheme"]
-
-    y = 50
-    page.insert_text((350, y), f"{patient['ชื่อ']} {patient['นามสกุล']}", fontsize=12)
-    y += 20
-    page.insert_text((350, y), f"HN: {patient['HN']}", fontsize=12)
-    y += 20
-    page.insert_text((350, y), f"Diagnosis: {patient['Diagnosis']}", fontsize=12)
-    y += 40
-    page.insert_text((50, y), f"Healthcare Scheme: {scheme}", fontsize=12)
-    y += 20
-    page.insert_text((50, y), f"Operation: {op}", fontsize=12)
-    y += 30
-    page.insert_text((50, y), "Equipment Used:", fontsize=12)
-    for item, qty in equip.items():
-        y += 20
-        page.insert_text((70, y), f"{item}: {qty}", fontsize=11)
-    y += 30
-    page.insert_text((50, y), f"Total Cost: {summary['Total Cost']:,.2f} THB", fontsize=12)
-    y += 20
-    page.insert_text((50, y), f"Total Reimbursement: {summary['Total Reimbursement']:,.2f} THB", fontsize=12)
-    y += 20
-    page.insert_text((50, y), f"Out-of-pocket: {summary['Out-of-pocket']:,.2f} THB", fontsize=12)
-    y += 50
-    page.insert_text((50, y), "Patient Signature: ___________________________", fontsize=12)
-    doc.save(buffer)
-    st.download_button("Download PDF", buffer.getvalue(), file_name="summary.pdf", mime="application/pdf")
+# Page 4: PDF Generation
+elif st.session_state.page == 4:
+    st.title("Generate PDF Summary")
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+    x = 50
+    y = height - 50
+    pd = st.session_state.patient_data
+    c.drawString(x + 300, y, f"ชื่อ: {pd['ชื่อ']} {pd['นามสกุล']}")
+    c.drawString(x + 300, y - 20, f"HN: {pd['HN']}")
+    c.drawString(x + 300, y - 40, f"Diagnosis: {pd['Diagnosis']}")
+    c.drawString(x, y - 80, f"Healthcare Scheme: {schemes[pd['Scheme']]}")
+    c.drawString(x, y - 100, f"Operation: {st.session_state.operation}")
+    y -= 140
+    c.drawString(x, y, "Equipment Used:")
+    y -= 20
+    for item, qty in st.session_state.equipment.items():
+        if qty > 0:
+            c.drawString(x + 20, y, f"{item}: {qty}")
+            y -= 15
+    y -= 10
+    c.drawString(x, y, f"Total Cost: {total_cost:.2f}")
+    y -= 15
+    c.drawString(x, y, f"Total Reimbursement: {total_reimbursement:.2f}")
+    y -= 15
+    c.drawString(x, y, f"Out-of-pocket Cost: {out_of_pocket:.2f}")
+    y -= 40
+    c.drawString(x, y, "Patient Signature: __________________________")
+    c.save()
+    buffer.seek(0)
+    st.download_button("Download PDF", buffer, file_name="summary.pdf")
+    if st.button("Previous"):
+        prev_page()
